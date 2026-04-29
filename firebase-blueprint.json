@@ -1,0 +1,43 @@
+{
+  "entities": {
+    "CameraNode": {
+      "title": "Camera Node",
+      "description": "Represents a single device acting as a camera source.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "personCount": { "type": "integer" },
+        "congestionLevel": { "type": "string" },
+        "occupancyRate": { "type": "integer" },
+        "hasQueue": { "type": "boolean" },
+        "lastUpdate": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "personCount", "lastUpdate"]
+    },
+    "AnalysisRecord": {
+      "title": "Analysis Record",
+      "description": "Historical data record for the entire cafeteria.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "personCount": { "type": "integer" },
+        "congestionLevel": { "type": "string" },
+        "occupancyRate": { "type": "integer" },
+        "hasQueue": { "type": "boolean" },
+        "reasoning": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "personCount"]
+    }
+  },
+  "firestore": {
+    "/nodes/{nodeId}": {
+      "schema": "CameraNode",
+      "description": "Currently active camera nodes and their latest readings."
+    },
+    "/history/{recordId}": {
+      "schema": "AnalysisRecord",
+      "description": "Aggregated historical records for analytics."
+    }
+  }
+}

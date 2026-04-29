@@ -1,0 +1,49 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidNode(data) {
+      return data.keys().hasAll(['id', 'personCount', 'occupancyRate', 'hasQueue', 'lastUpdate']) &&
+             data.id is string &&
+             data.personCount is int &&
+             data.occupancyRate is number &&
+             data.hasQueue is bool;
+    }
+
+    function isValidHistory(data) {
+      return data.keys().hasAll(['personCount', 'occupancyRate', 'congestionLevel', 'timestamp']) &&
+             data.personCount is int &&
+             data.occupancyRate is number &&
+             data.congestionLevel is string;
+    }
+
+    // Node rules: Any device can contribute their analysis
+    match /nodes/{nodeId} {
+      allow read: if true;
+      allow create, update: if isValidId(nodeId) && isValidNode(request.resource.data);
+      allow delete: if false;
+    }
+
+    // History rules: Aggregate data for charts
+    match /history/{recordId} {
+      allow read: if true;
+      allow create: if isValidHistory(request.resource.data);
+      allow update, delete: if false;
+    }
+  }
+}

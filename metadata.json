@@ -1,0 +1,6 @@
+{
+  "name": "Cafeteria Vision AI",
+  "description": "Automated cafeteria congestion analysis assistant using AI vision to monitor occupancy and queue status.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["AI Image Analysis", "Real-time Monitoring"]
+}
