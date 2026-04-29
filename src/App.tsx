@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback, ReactNode, useMemo } from "react";
 import { 
   Camera, 
-  Users, 
   Trash2, 
   AlertCircle, 
   Clock, 
@@ -34,7 +33,7 @@ import {
   AreaChart,
   Area 
 } from "recharts";
-import { CafeteriaAnalysis, getTrendAnalysis } from "./services/gemini";
+import { CafeteriaAnalysis } from "./services/gemini";
 import { analyzeLocalCafeteriaFrame } from "./services/localVision";
 import { db } from "./lib/firebase";
 import { 
@@ -64,8 +63,16 @@ interface AnalysisRecord extends CafeteriaAnalysis {
 const INTERVAL_SECONDS = 90;
 const ADMIN_ID = "admin";
 const ADMIN_PW = "admin123";
+const DEFAULT_STORE_CAPACITY = 120;
 
 type ViewMode = "public" | "admin" | "login" | "dashboard";
+
+const createClientId = () => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `node-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+};
 
 const getCongestionColor = (level: string) => {
   switch (level) {
@@ -88,15 +95,18 @@ export default function App() {
   
   // Aggregate state from all active nodes
   const [aggregateAnalysis, setAggregateAnalysis] = useState<AnalysisRecord | null>(null);
-  const [aiInsight, setAiInsight] = useState<string>("");
   
   const [history, setHistory] = useState<AnalysisRecord[]>([]);
+  const [storeCapacity, setStoreCapacity] = useState(() => {
+    const stored = Number(localStorage.getItem("cafeteria_store_capacity"));
+    return Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_STORE_CAPACITY;
+  });
 
   // Unique ID for this device/session
   const [nodeId] = useState(() => {
     let id = localStorage.getItem("cafeteria_node_id");
     if (!id) {
-      id = crypto.randomUUID();
+      id = createClientId();
       localStorage.setItem("cafeteria_node_id", id);
     }
     return id;
@@ -157,11 +167,11 @@ export default function App() {
     
     setIsAnalyzing(true);
     try {
-      const result = await analyzeLocalCafeteriaFrame(canvasRef.current);
+      const result = await analyzeLocalCafeteriaFrame(canvasRef.current, storeCapacity);
 
       const record: AnalysisRecord = {
         ...result,
-        id: crypto.randomUUID(),
+        id: createClientId(),
         timestamp: new Date().toISOString(),
         snapshot: `data:image/jpeg;base64,${base64}`
       };
@@ -181,7 +191,7 @@ export default function App() {
       setIsAnalyzing(false);
       setCountdown(INTERVAL_SECONDS);
     }
-  }, [isAnalyzing, isCameraActive, nodeId]);
+  }, [isAnalyzing, isCameraActive, nodeId, storeCapacity]);
 
   // Sync effect: Listen to all active nodes and aggregate data
   useEffect(() => {
@@ -202,45 +212,35 @@ export default function App() {
         return;
       }
 
-      // Aggregate logic: Sum people, Average occupancy (or sum if relative)
-      // Let's assume nodes cover non-overlapping areas, so we sum everything.
       const totalPeople = nodes.reduce((sum, n) => sum + (n.personCount || 0), 0);
-      const totalOccupancy = nodes.reduce((sum, n) => sum + (n.occupancyRate || 0), 0);
       const hasQueue = nodes.some(n => n.hasQueue);
       
-      // Determine congestion level based on total occupancy
-      const avgOccupancy = Math.min(100, Math.floor(totalOccupancy / nodes.length));
+      // Occupancy and congestion are based on store capacity configured in admin.
+      const occupancyRate = Math.floor((totalPeople / Math.max(1, storeCapacity)) * 100);
       let level = "空席あり";
-      if (avgOccupancy > 90) level = "満席";
-      else if (avgOccupancy > 70) level = "混雑";
-      else if (avgOccupancy > 40) level = "やや混雑";
+      if (occupancyRate > 90) level = "満席";
+      else if (occupancyRate > 70) level = "混雑";
+      else if (occupancyRate > 40) level = "やや混雑";
 
       const agg: AnalysisRecord = {
         id: "aggregate",
         timestamp: new Date().toISOString(),
         personCount: totalPeople,
-        occupancyRate: avgOccupancy,
+        occupancyRate,
         congestionLevel: level as any,
         hasQueue,
-        reasoning: `${nodes.length}台のカメラによる合計値です。`
+        reasoning: `${nodes.length}台のカメラ合計。定員${storeCapacity}名基準で算出。`
       };
       
       setAggregateAnalysis(agg);
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [storeCapacity]);
 
-  // Gemini Insight Effect
   useEffect(() => {
-    if (aggregateAnalysis && history.length > 0) {
-      const timer = setTimeout(async () => {
-        const insight = await getTrendAnalysis(history, aggregateAnalysis);
-        setAiInsight(insight);
-      }, 2000); // Debounce to allow history to settle
-      return () => clearTimeout(timer);
-    }
-  }, [aggregateAnalysis]);
+    localStorage.setItem("cafeteria_store_capacity", String(storeCapacity));
+  }, [storeCapacity]);
 
   // Listen to history
   useEffect(() => {
@@ -309,7 +309,7 @@ export default function App() {
         congestionLevel: "空席あり",
         occupancyRate: 0,
         hasQueue: false,
-        id: crypto.randomUUID(),
+        id: createClientId(),
         timestamp: new Date().toISOString(),
       };
       setLastAnalysis({ ...initial, ...updates });
@@ -322,13 +322,12 @@ export default function App() {
   const exportCSV = () => {
     const exportedAt = new Date();
     const exportedAtText = exportedAt.toLocaleString("ja-JP");
-    const headers = ["日時", "人数", "混雑度", "占有率", "行列"];
+    const headers = ["日時", "人数", "混雑度", "占有率"];
     const rows = history.map(h => [
       new Date(h.timestamp).toLocaleString("ja-JP"),
       h.personCount,
       h.congestionLevel,
       h.occupancyRate,
-      h.hasQueue ? "あり" : "なし"
     ]);
     const csvBody = [
       ["出力日時", exportedAtText],
@@ -354,9 +353,6 @@ export default function App() {
       <header className="bg-white/90 backdrop-blur-md sticky top-0 z-50 border-b border-slate-200 h-16">
         <div className="max-w-7xl mx-auto px-4 h-full flex items-center justify-between">
           <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView("public")}>
-            <div className="w-8 h-8 bg-blue-600 rounded-none flex items-center justify-center">
-              <Monitor className="text-white" size={18} />
-            </div>
             <h1 className="font-extrabold text-lg tracking-tight">食堂なう</h1>
           </div>
           <nav className="flex items-center gap-1">
@@ -383,30 +379,6 @@ export default function App() {
               </div>
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2 bg-white p-8 rounded-none border border-slate-200 shadow-sm space-y-8">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
-                        <Monitor className="text-blue-500" size={18} />
-                        <motion.div 
-                          animate={{ scale: [1, 1.5, 1], opacity: [0.5, 0, 0.5] }} 
-                          transition={{ repeat: Infinity, duration: 2 }}
-                          className="absolute -inset-1 rounded-full bg-blue-400 -z-10"
-                        />
-                      </div>
-                      <div className="flex flex-col">
-                        <span className="text-[10px] font-black text-blue-600 uppercase tracking-tighter leading-none">Gemini Insight</span>
-                        <p className="text-xs font-bold text-slate-700 mt-0.5">
-                          {aiInsight || (aggregateAnalysis ? "状況を予測中..." : "データ待機中")}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                       <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">Last Sync</span>
-                       <span className="text-[10px] font-mono font-black text-slate-500">
-                         {aggregateAnalysis ? new Date(aggregateAnalysis.timestamp).toLocaleTimeString() : "--:--"}
-                       </span>
-                    </div>
-                  </div>
                   <div className="flex flex-col md:flex-row gap-8 items-center">
                     <div className={`p-10 rounded-none border-2 flex flex-col items-center justify-center min-w-[200px] flex-1 ${aggregateAnalysis ? getCongestionColor(aggregateAnalysis.congestionLevel).bg + " " + getCongestionColor(aggregateAnalysis.congestionLevel).border : "bg-slate-50 border-slate-100"}`}>
                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">状況</p>
@@ -416,17 +388,13 @@ export default function App() {
                     </div>
                     <div className="flex-1 w-full space-y-6">
                       <div>
-                        <div className="flex justify-between mb-2"><span className="text-xs font-bold text-slate-500">平均占有率</span><span className="text-xl font-black">{aggregateAnalysis?.occupancyRate ?? 0}%</span></div>
+                        <div className="flex justify-between mb-2"><span className="text-xs font-bold text-slate-500">占有率</span><span className="text-xl font-black">{aggregateAnalysis?.occupancyRate ?? 0}%</span></div>
                         <div className="h-3 bg-slate-100 rounded-none overflow-hidden">
-                          <motion.div initial={{ width: 0 }} animate={{ width: `${aggregateAnalysis?.occupancyRate ?? 0}%` }} className={`h-full ${aggregateAnalysis ? getCongestionColor(aggregateAnalysis.congestionLevel).bar : "bg-slate-300"}`} />
+                          <motion.div initial={{ width: 0 }} animate={{ width: `${Math.min(100, aggregateAnalysis?.occupancyRate ?? 0)}%` }} className={`h-full ${aggregateAnalysis ? getCongestionColor(aggregateAnalysis.congestionLevel).bar : "bg-slate-300"}`} />
                         </div>
                       </div>
-                      <div className="flex justify-between p-4 bg-slate-50 rounded-none border border-slate-100">
-                        <div className="flex items-center gap-3"><Users className="text-blue-500" size={24} /><div><p className="text-[10px] font-bold text-slate-400 uppercase">合計人数</p><p className="text-lg font-black">{Math.floor(aggregateAnalysis?.personCount ?? 0).toLocaleString()} 名</p></div></div>
-                        <div className="text-right">
-                          <p className="text-[10px] font-bold text-slate-400 uppercase">待機列</p>
-                          <p className={`text-lg font-black ${aggregateAnalysis?.hasQueue ? "text-rose-500" : "text-emerald-500"}`}>{aggregateAnalysis?.hasQueue ? "あり" : "なし"}</p>
-                        </div>
+                      <div className="flex p-4 bg-slate-50 rounded-none border border-slate-100">
+                        <div><p className="text-[10px] font-bold text-slate-400 uppercase">合計人数</p><p className="text-lg font-black">{Math.floor(aggregateAnalysis?.personCount ?? 0).toLocaleString()} 名</p></div>
                       </div>
                     </div>
                   </div>
@@ -497,23 +465,44 @@ export default function App() {
                     <div className="space-y-4">
                       <label className="block text-xs font-black text-slate-400 uppercase tracking-widest">人数</label>
                       <div className="flex items-center gap-2">
-                        <button onClick={() => handleManualOverride({ personCount: Math.max(0, (lastAnalysis?.personCount ?? 0) - 1) })} className="w-10 h-10 bg-slate-100 rounded-none">-</button>
-                        <input type="number" value={lastAnalysis?.personCount ?? 0} onChange={e => handleManualOverride({ personCount: parseInt(e.target.value) || 0 })} className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-none text-center font-bold" />
-                        <button onClick={() => handleManualOverride({ personCount: (lastAnalysis?.personCount ?? 0) + 1 })} className="w-10 h-10 bg-slate-100 rounded-none">+</button>
+                        <button
+                          onClick={() => handleManualOverride({ personCount: Math.max(0, (lastAnalysis?.personCount ?? 0) - 1) })}
+                          disabled={autoAnalysisEnabled}
+                          className="w-10 h-10 bg-slate-100 rounded-none disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          -
+                        </button>
+                        <input
+                          type="number"
+                          value={lastAnalysis?.personCount ?? 0}
+                          onChange={e => handleManualOverride({ personCount: parseInt(e.target.value) || 0 })}
+                          disabled={autoAnalysisEnabled}
+                          className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-none text-center font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+                        />
+                        <button
+                          onClick={() => handleManualOverride({ personCount: (lastAnalysis?.personCount ?? 0) + 1 })}
+                          disabled={autoAnalysisEnabled}
+                          className="w-10 h-10 bg-slate-100 rounded-none disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          +
+                        </button>
                       </div>
-                      <label className="block text-xs font-black text-slate-400 uppercase tracking-widest">混雑度</label>
-                      <select value={lastAnalysis?.congestionLevel ?? ""} onChange={e => handleManualOverride({ congestionLevel: e.target.value as any })} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-none font-bold">
-                        {["空席あり", "やや混雑", "混雑", "満席"].map(l => <option key={l} value={l}>{l}</option>)}
-                      </select>
+                      {autoAnalysisEnabled && (
+                        <p className="text-[10px] font-bold text-slate-400">自動解析ON中は人数を編集できません。</p>
+                      )}
+                      <label className="block text-xs font-black text-slate-400 uppercase tracking-widest">店の定員 (人)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={storeCapacity}
+                        onChange={(e) => setStoreCapacity(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-none font-bold"
+                      />
                     </div>
                     <div className="space-y-4">
-                      <label className="block text-xs font-black text-slate-400 uppercase tracking-widest">占有率 (%)</label>
-                      <input type="range" min="0" max="100" value={lastAnalysis?.occupancyRate ?? 0} onChange={e => handleManualOverride({ occupancyRate: parseInt(e.target.value) })} className="w-full accent-blue-600" />
-                      <div className="text-center font-bold text-blue-600">{lastAnalysis?.occupancyRate ?? 0}%</div>
-                      <label className="block text-xs font-black text-slate-400 uppercase tracking-widest">行列</label>
-                      <div className="flex gap-2">
-                        <button onClick={() => handleManualOverride({ hasQueue: true })} className={`flex-1 py-2 rounded-none font-bold ${lastAnalysis?.hasQueue ? "bg-rose-500 text-white" : "bg-slate-100"}`}>あり</button>
-                        <button onClick={() => handleManualOverride({ hasQueue: false })} className={`flex-1 py-2 rounded-none font-bold ${!lastAnalysis?.hasQueue ? "bg-emerald-500 text-white" : "bg-slate-100"}`}>なし</button>
+                      <label className="block text-xs font-black text-slate-400 uppercase tracking-widest">現在の占有率 (%)</label>
+                      <div className="w-full p-3 bg-slate-50 border border-slate-200 rounded-none text-center font-bold text-blue-600">
+                        {aggregateAnalysis?.occupancyRate ?? 0}%
                       </div>
                     </div>
                   </div>

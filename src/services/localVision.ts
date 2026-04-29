@@ -14,6 +14,7 @@ function getModel() {
 
 export async function analyzeLocalCafeteriaFrame(
   source: HTMLCanvasElement | HTMLVideoElement,
+  storeCapacity: number,
 ): Promise<CafeteriaAnalysis> {
   const model = await getModel();
   const predictions = await model.detect(source);
@@ -26,20 +27,8 @@ export async function analyzeLocalCafeteriaFrame(
   const frameHeight =
     source instanceof HTMLVideoElement ? source.videoHeight || 1 : source.height || 1;
 
-  // A simple queue heuristic: several people in the lower-center region.
-  const inQueueZone = persons.filter((p) => {
-    const [x, y, width, height] = p.bbox;
-    const centerX = x + width / 2;
-    const centerY = y + height / 2;
-    return (
-      centerX > frameWidth * 0.35 &&
-      centerX < frameWidth * 0.65 &&
-      centerY > frameHeight * 0.6
-    );
-  }).length;
-
-  const hasQueue = inQueueZone >= 3 || personCount >= 12;
-  const occupancyRate = Math.min(100, Math.round((personCount / 120) * 100));
+  const safeCapacity = Math.max(1, storeCapacity);
+  const occupancyRate = Math.round((personCount / safeCapacity) * 100);
 
   let congestionLevel: CafeteriaAnalysis["congestionLevel"] = "空席あり";
   if (occupancyRate > 90) congestionLevel = "満席";
@@ -50,7 +39,7 @@ export async function analyzeLocalCafeteriaFrame(
     personCount,
     congestionLevel,
     occupancyRate,
-    hasQueue,
-    reasoning: "無料ローカルAI（COCO-SSD）で人物検出を実行しました。",
+    hasQueue: false,
+    reasoning: `無料ローカルAI（COCO-SSD）で人物検出を実行。定員${safeCapacity}名を基準に算出。`,
   };
 }
