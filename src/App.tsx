@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback, ReactNode, useMemo } from "react";
-import { 
-  Camera, 
-  Trash2, 
-  AlertCircle, 
-  Clock, 
+import {
+  Camera,
+  Trash2,
+  AlertCircle,
+  Clock,
   History,
   LayoutDashboard,
   Timer,
@@ -22,28 +22,28 @@ import {
   CheckCircle2
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { 
-  LineChart, 
-  Line, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
   ResponsiveContainer,
   AreaChart,
-  Area 
+  Area
 } from "recharts";
 import { CafeteriaAnalysis } from "./services/gemini";
 import { analyzeLocalCafeteriaFrame } from "./services/localVision";
 import { db } from "./lib/firebase";
-import { 
-  collection, 
-  doc, 
-  setDoc, 
-  onSnapshot, 
-  query, 
-  where, 
-  Timestamp, 
+import {
+  collection,
+  doc,
+  setDoc,
+  onSnapshot,
+  query,
+  where,
+  Timestamp,
   serverTimestamp,
   deleteDoc,
   getDocs,
@@ -56,7 +56,7 @@ import {
 
 interface AnalysisRecord extends CafeteriaAnalysis {
   id: string;
-  timestamp: string; 
+  timestamp: string;
   snapshot?: string;
 }
 
@@ -64,6 +64,7 @@ const INTERVAL_SECONDS = 90;
 const ADMIN_ID = "admin";
 const ADMIN_PW = "admin123";
 const DEFAULT_STORE_CAPACITY = 120;
+const HISTORY_SAVE_INTERVAL_MS = 30 * 60 * 1000;
 
 type ViewMode = "public" | "admin" | "login" | "dashboard";
 
@@ -89,20 +90,24 @@ const getCongestionColor = (level: string) => {
 export default function App() {
   const [view, setView] = useState<ViewMode>("public");
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  
-  // Local state for this specific node
+
   const [lastAnalysis, setLastAnalysis] = useState<AnalysisRecord | null>(null);
-  
-  // Aggregate state from all active nodes
   const [aggregateAnalysis, setAggregateAnalysis] = useState<AnalysisRecord | null>(null);
-  
   const [history, setHistory] = useState<AnalysisRecord[]>([]);
   const [storeCapacity, setStoreCapacity] = useState(() => {
     const stored = Number(localStorage.getItem("cafeteria_store_capacity"));
     return Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_STORE_CAPACITY;
   });
 
-  // Unique ID for this device/session
+  const [hiddenMonths, setHiddenMonths] = useState<Set<string>>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("cafeteria_hidden_months") || "[]");
+      return new Set<string>(stored);
+    } catch {
+      return new Set<string>();
+    }
+  });
+
   const [nodeId] = useState(() => {
     let id = localStorage.getItem("cafeteria_node_id");
     if (!id) {
@@ -124,16 +129,10 @@ export default function App() {
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // REMOVED: Local storage sync for history is no longer needed as we use Firestore
-  // useEffect(() => {
-  //   localStorage.setItem("cafeteria_last_analysis", JSON.stringify(lastAnalysis));
-  //   localStorage.setItem("cafeteria_history", JSON.stringify(history));
-  // }, [lastAnalysis, history]);
-
   const startCamera = async () => {
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } } 
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } }
       });
       streamRef.current = mediaStream;
       if (videoRef.current) videoRef.current.srcObject = mediaStream;
@@ -164,7 +163,7 @@ export default function App() {
     canvasRef.current.height = videoRef.current.videoHeight;
     context.drawImage(videoRef.current, 0, 0);
     const base64 = canvasRef.current.toDataURL("image/jpeg", 0.7).split(",")[1];
-    
+
     setIsAnalyzing(true);
     try {
       const result = await analyzeLocalCafeteriaFrame(canvasRef.current, storeCapacity);
@@ -176,8 +175,7 @@ export default function App() {
         snapshot: `data:image/jpeg;base64,${base64}`
       };
       setLastAnalysis(record);
-      
-      // Update this node's data in Firebase
+
       await setDoc(doc(db, "nodes", nodeId), {
         ...result,
         id: nodeId,
@@ -193,14 +191,12 @@ export default function App() {
     }
   }, [isAnalyzing, isCameraActive, nodeId, storeCapacity]);
 
-  // Sync effect: Listen to all active nodes and aggregate data
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "nodes"), (snapshot) => {
       const now = Date.now();
       const nodes: any[] = [];
       snapshot.forEach((doc) => {
         const data = doc.data();
-        // Only consider nodes active in the last 10 minutes
         const lastUpdate = data.lastUpdate?.toDate()?.getTime() || 0;
         if (now - lastUpdate < 10 * 60 * 1000) {
           nodes.push(data);
@@ -214,8 +210,7 @@ export default function App() {
 
       const totalPeople = nodes.reduce((sum, n) => sum + (n.personCount || 0), 0);
       const hasQueue = nodes.some(n => n.hasQueue);
-      
-      // Occupancy and congestion are based on store capacity configured in admin.
+
       const occupancyRate = Math.floor((totalPeople / Math.max(1, storeCapacity)) * 100);
       let level = "空席あり";
       if (occupancyRate > 90) level = "満席";
@@ -231,7 +226,7 @@ export default function App() {
         hasQueue,
         reasoning: `${nodes.length}台のカメラ合計。定員${storeCapacity}名基準で算出。`
       };
-      
+
       setAggregateAnalysis(agg);
     });
 
@@ -242,16 +237,14 @@ export default function App() {
     localStorage.setItem("cafeteria_store_capacity", String(storeCapacity));
   }, [storeCapacity]);
 
-  // Listen to history
   useEffect(() => {
     const q = query(collection(db, "history"), orderBy("timestamp", "desc"), limit(100));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const h: AnalysisRecord[] = [];
       snapshot.forEach((doc) => {
         const data = doc.data();
-        // Convert Firebase Timestamp to ISO string for the UI
-        const timestamp = data.timestamp instanceof Timestamp 
-          ? data.timestamp.toDate().toISOString() 
+        const timestamp = data.timestamp instanceof Timestamp
+          ? data.timestamp.toDate().toISOString()
           : new Date().toISOString();
         h.push({ ...data, id: doc.id, timestamp } as AnalysisRecord);
       });
@@ -260,10 +253,9 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // One node (the longest active or a specific "leader") saves aggregated history every INTERVAL
   useEffect(() => {
-    if (!autoAnalysisEnabled || !aggregateAnalysis || !isLoggedIn) return; // For now only logged in admin nodes save history to prevent spam
-    
+    if (!autoAnalysisEnabled || !aggregateAnalysis || !isLoggedIn) return;
+
     const saveToHistory = async () => {
       try {
         await addDoc(collection(db, "history"), {
@@ -275,7 +267,7 @@ export default function App() {
       }
     };
 
-    const interval = setInterval(saveToHistory, INTERVAL_SECONDS * 1000);
+    const interval = setInterval(saveToHistory, HISTORY_SAVE_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [autoAnalysisEnabled, aggregateAnalysis, isLoggedIn]);
 
@@ -288,7 +280,7 @@ export default function App() {
     } else {
       if (timerRef.current) clearInterval(timerRef.current);
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
-      setCountdown(INTERVAL_SECONDS); // Reset countdown in manual mode
+      setCountdown(INTERVAL_SECONDS);
     }
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -301,6 +293,40 @@ export default function App() {
       videoRef.current.srcObject = streamRef.current;
     }
   }, [isCameraActive, view]);
+
+  const visibleHistory = useMemo(
+    () => history.filter(h => !hiddenMonths.has(h.timestamp.substring(0, 7))),
+    [history, hiddenMonths]
+  );
+
+  const dailyData = useMemo(() => {
+    const today = new Date().toISOString().substring(0, 10);
+    return [...visibleHistory]
+      .filter(h => h.timestamp.startsWith(today))
+      .reverse()
+      .map(h => {
+        const d = new Date(h.timestamp);
+        const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+        return { time, persons: h.personCount, rate: h.occupancyRate };
+      });
+  }, [visibleHistory]);
+
+  const availableMonths = useMemo(() => {
+    const s = new Set<string>();
+    visibleHistory.forEach(h => s.add(h.timestamp.substring(0, 7)));
+    return Array.from(s).sort().reverse();
+  }, [visibleHistory]);
+
+  const currentYM = useMemo(() => {
+    const n = new Date();
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}`;
+  }, []);
+
+  const prevYM = useMemo(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }, []);
 
   const handleManualOverride = (updates: Partial<CafeteriaAnalysis>) => {
     if (!lastAnalysis) {
@@ -319,33 +345,44 @@ export default function App() {
     setLastAnalysis(updated);
   };
 
-  const exportCSV = () => {
-    const exportedAt = new Date();
-    const exportedAtText = exportedAt.toLocaleString("ja-JP");
-    const headers = ["日時", "人数", "混雑度", "占有率"];
-    const rows = history.map(h => [
-      new Date(h.timestamp).toLocaleString("ja-JP"),
-      h.personCount,
-      h.congestionLevel,
-      h.occupancyRate,
-    ]);
+  const formatMonth = (ym: string) => {
+    const [y, m] = ym.split("-");
+    return `${y}年${parseInt(m)}月`;
+  };
+
+  const exportMonthCSV = (yearMonth: string) => {
+    const rows = history
+      .filter(h => h.timestamp.startsWith(yearMonth))
+      .map(h => [
+        new Date(h.timestamp).toLocaleString("ja-JP"),
+        h.personCount,
+        h.congestionLevel,
+        h.occupancyRate,
+      ]);
+    if (rows.length === 0) return;
     const csvBody = [
-      ["出力日時", exportedAtText],
+      ["出力日時", new Date().toLocaleString("ja-JP")],
       [],
-      headers,
+      ["日時", "人数", "混雑度", "占有率"],
       ...rows,
-    ].map((e) => e.join(",")).join("\n");
-    const bom = "\uFEFF";
-    const blob = new Blob([bom + csvBody], { type: "text/csv;charset=utf-8;" });
-    const downloadUrl = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = downloadUrl;
-    const fileTimestamp = exportedAt.toISOString().replace(/[:.]/g, "-");
-    link.download = `cafeteria_report_${fileTimestamp}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(downloadUrl);
+    ].map(r => r.join(",")).join("\n");
+    const blob = new Blob(["﻿" + csvBody], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `cafeteria_${yearMonth}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const deleteMonth = (yearMonth: string) => {
+    if (!confirm(`${formatMonth(yearMonth)}のデータを削除しますか？\nこの操作はこのデバイスでのみ反映されます。`)) return;
+    const next = new Set(hiddenMonths);
+    next.add(yearMonth);
+    setHiddenMonths(next);
+    localStorage.setItem("cafeteria_hidden_months", JSON.stringify(Array.from(next)));
   };
 
   return (
@@ -434,15 +471,15 @@ export default function App() {
               <div className="flex flex-col md:flex-row justify-between items-center gap-4">
                 <h2 className="text-3xl font-black">管理パネル</h2>
                 <div className="flex bg-slate-100 p-1 rounded-none border border-slate-200">
-                  <button 
-                    onClick={() => setAutoAnalysisEnabled(true)} 
+                  <button
+                    onClick={() => setAutoAnalysisEnabled(true)}
                     className={`flex items-center gap-2 px-6 py-2 rounded-none text-xs font-black uppercase tracking-widest transition-all ${autoAnalysisEnabled ? "bg-white text-blue-600 shadow-sm" : "text-slate-400 hover:text-slate-600"}`}
                   >
                     <RefreshCw className={autoAnalysisEnabled ? "animate-spin" : ""} size={14} />
                     自動解析: ON ({countdown}s)
                   </button>
-                  <button 
-                    onClick={() => setAutoAnalysisEnabled(false)} 
+                  <button
+                    onClick={() => setAutoAnalysisEnabled(false)}
                     className={`flex items-center gap-2 px-6 py-2 rounded-none text-xs font-black uppercase tracking-widest transition-all ${!autoAnalysisEnabled ? "bg-white text-blue-600 shadow-sm" : "text-slate-400 hover:text-slate-600"}`}
                   >
                     <Pause size={14} />
@@ -454,9 +491,6 @@ export default function App() {
                 <div className="lg:col-span-2 bg-white p-8 rounded-none border border-slate-200 shadow-sm space-y-6">
                   <div className="flex justify-between items-center">
                     <h3 className="font-bold flex items-center gap-2"><Settings size={18} /> パラメータ調整</h3>
-                    <div className="px-3 py-1 text-[10px] font-black uppercase tracking-tighter bg-white text-blue-600 shadow-sm border border-slate-200">
-                      Local (Free Vision)
-                    </div>
                     <button onClick={performAnalysis} disabled={isAnalyzing} className="px-6 py-2 bg-blue-600 text-white rounded-none font-bold text-xs shadow-lg shadow-blue-100 flex items-center gap-2 uppercase tracking-widest active:scale-95 disabled:opacity-50">
                       <Camera size={14} /> 今すぐスキャン
                     </button>
@@ -513,7 +547,7 @@ export default function App() {
                     {!isCameraActive && (
                       <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-slate-700 bg-slate-900/40">
                         <CameraOff size={40} />
-                        <button 
+                        <button
                           onClick={startCamera}
                           className="px-6 py-2 bg-blue-600 text-white font-bold text-xs uppercase tracking-widest"
                         >
@@ -542,35 +576,77 @@ export default function App() {
 
           {view === "dashboard" && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
-              <div className="flex justify-between items-end">
-                <div><h2 className="text-3xl font-black">活用状況レポート</h2><p className="text-slate-400 font-medium">混雑傾向の可視化</p></div>
-                <button onClick={exportCSV} className="flex items-center gap-2 px-6 py-3 bg-slate-900 text-white rounded-none font-bold"><Download size={18} /> CSV出力</button>
+              <div>
+                <h2 className="text-3xl font-black">活用状況レポート</h2>
+                <p className="text-slate-400 font-medium">本日の混雑推移（30分ごと更新）</p>
               </div>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                 <div className="bg-white p-8 rounded-none border border-slate-200 shadow-sm h-[400px]">
-                  <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">利用人数推移</h3>
+                  <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">利用人数推移（本日）</h3>
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={history.map(h => ({ time: new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), val: h.personCount })).reverse()}>
+                    <AreaChart data={dailyData}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                       <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
                       <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} tickFormatter={(val) => Math.floor(val).toLocaleString()} />
                       <Tooltip formatter={(val: number) => [Math.floor(val).toLocaleString() + "名", "人数"]} />
-                      <Area type="monotone" dataKey="val" stroke="#3b82f6" strokeWidth={3} fillOpacity={0.1} fill="#3b82f6" />
+                      <Area type="monotone" dataKey="persons" stroke="#3b82f6" strokeWidth={3} fillOpacity={0.1} fill="#3b82f6" />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
                 <div className="bg-white p-8 rounded-none border border-slate-200 shadow-sm h-[400px]">
-                  <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">占有率推移</h3>
+                  <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">占有率推移（本日）</h3>
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={history.map(h => ({ time: new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), rate: h.occupancyRate })).reverse()}>
+                    <LineChart data={dailyData}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                       <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
                       <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
-                      <Tooltip />
+                      <Tooltip formatter={(val: number) => [`${val}%`, "占有率"]} />
                       <Line type="monotone" dataKey="rate" stroke="#10b981" strokeWidth={3} dot={false} />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
+              </div>
+              <div className="bg-white p-8 rounded-none border border-slate-200 shadow-sm">
+                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">月別CSVデータ管理</h3>
+                {availableMonths.length === 0 ? (
+                  <p className="text-center text-slate-400 py-10 text-xs">データなし</p>
+                ) : (
+                  <div className="space-y-2">
+                    {availableMonths.map(m => {
+                      const isRecent = m >= prevYM;
+                      const count = history.filter(h => h.timestamp.startsWith(m)).length;
+                      return (
+                        <div key={m} className="flex items-center justify-between p-4 bg-slate-50 border border-slate-100">
+                          <div>
+                            <p className="font-bold text-sm">{formatMonth(m)}</p>
+                            <p className="text-xs text-slate-400">{count}件</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {isRecent && (
+                              <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest px-2 py-1 bg-emerald-50 border border-emerald-100">
+                                {m === currentYM ? "今月" : "先月"}
+                              </span>
+                            )}
+                            <button
+                              onClick={() => exportMonthCSV(m)}
+                              className="px-4 py-2 bg-slate-900 text-white text-xs font-bold flex items-center gap-1"
+                            >
+                              <Download size={12} /> ダウンロード
+                            </button>
+                            {!isRecent && (
+                              <button
+                                onClick={() => deleteMonth(m)}
+                                className="px-4 py-2 bg-rose-50 text-rose-600 border border-rose-200 text-xs font-bold flex items-center gap-1 hover:bg-rose-100"
+                              >
+                                <Trash2 size={12} /> 削除
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </motion.div>
           )}
