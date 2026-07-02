@@ -19,8 +19,8 @@
 |------|------|
 | フロントエンド | React 19 / TypeScript |
 | スタイリング | Tailwind CSS 4 |
-| データ | Firebase Firestore（リアルタイム同期） |
-| AI | Gemini API（画像解析） |
+| データ | localStorage（サーバー不要） |
+| AI | TensorFlow.js / COCO-SSD（ブラウザ内で画像解析） |
 | ビルド | Vite 6 |
 | デプロイ | Cloudflare Pages |
 
@@ -29,8 +29,6 @@
 ```bash
 git clone https://github.com/tatagen/cafeteria-vision-ai.git
 cd cafeteria-vision-ai
-cp firebase-applet-config.example.json firebase-applet-config.json
-# firebase-applet-config.json にFirebaseプロジェクト情報を入力
 npm install
 npm run dev
 ```

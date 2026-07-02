@@ -35,22 +35,19 @@ import {
 } from "recharts";
 import { CafeteriaAnalysis } from "./services/gemini";
 import { analyzeLocalCafeteriaFrame } from "./services/localVision";
-import { db } from "./lib/firebase";
 import {
+  db,
   collection,
   doc,
   setDoc,
   onSnapshot,
   query,
-  where,
   Timestamp,
   serverTimestamp,
-  deleteDoc,
-  getDocs,
   limit,
   orderBy,
   addDoc
-} from "firebase/firestore";
+} from "./lib/firebase";
 
 // --- Types & Constants ---
 
