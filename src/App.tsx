@@ -458,6 +458,10 @@ export default function App() {
                   {error && <p className="text-rose-500 text-xs font-bold">{error}</p>}
                   <button className="w-full py-4 bg-blue-600 text-white rounded-none font-bold shadow-lg shadow-blue-100">ログイン</button>
                 </form>
+                <div className="mt-6 pt-6 border-t border-slate-100 space-y-3">
+                  <button type="button" onClick={() => { setIsLoggedIn(true); setView("admin"); }} className="w-full py-4 bg-emerald-600 text-white rounded-none font-bold shadow-lg shadow-emerald-100">デモログイン（クリックで管理画面へ）</button>
+                  <p className="text-slate-400 text-xs text-center">ポートフォリオ用デモです。ID: {ADMIN_ID} / PW: {ADMIN_PW}</p>
+                </div>
               </div>
               <button onClick={() => setView("public")} className="text-slate-400 text-sm font-bold">戻る</button>
             </motion.div>
