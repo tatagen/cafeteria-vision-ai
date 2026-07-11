@@ -27,19 +27,20 @@ export async function analyzeLocalCafeteriaFrame(
   const frameHeight =
     source instanceof HTMLVideoElement ? source.videoHeight || 1 : source.height || 1;
 
-  const safeCapacity = Math.max(1, storeCapacity);
-  const occupancyRate = Math.round((personCount / safeCapacity) * 100);
+  const occupancyRate = Math.round((personCount / storeCapacity) * 100);
 
   let congestionLevel: CafeteriaAnalysis["congestionLevel"] = "空席あり";
   if (occupancyRate > 90) congestionLevel = "満席";
   else if (occupancyRate > 70) congestionLevel = "混雑";
   else if (occupancyRate > 40) congestionLevel = "やや混雑";
 
+  console.log("DEBUG occupancy calc", storeCapacity, personCount, occupancyRate);
+
   return {
     personCount,
     congestionLevel,
     occupancyRate,
     hasQueue: false,
-    reasoning: `無料ローカルAI（COCO-SSD）で人物検出を実行。定員${safeCapacity}名を基準に算出。`,
+    reasoning: `無料ローカルAI（COCO-SSD）で人物検出を実行。定員${storeCapacity}名を基準に算出。`,
   };
 }
